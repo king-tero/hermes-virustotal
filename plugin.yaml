@@ -1,0 +1,11 @@
+manifest_version: 1
+name: hermes-virustotal
+version: 0.1.0
+description: Hermes VirusTotal plugin — reputation signals for file and hash workflows with privacy-respecting binary upload.
+author: Hermes Community
+provides_tools:
+  - vt_check_hash
+  - vt_check_file
+provides_hooks:
+  - pre_tool_call
+  - pre_llm_call
