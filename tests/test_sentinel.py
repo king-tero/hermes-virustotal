@@ -570,6 +570,18 @@ class AdvisorPluginTests(unittest.TestCase):
             self.assertFalse(hasattr(vt_module, "vt_scan_url"))
             self.assertFalse(hasattr(vt_module, "URL_SCHEMA"))
 
+    def test_plugin_dir_and_cache_db_have_private_permissions(self):
+        import stat
+        with tempfile.TemporaryDirectory() as tmp:
+            module, _terminal = load_plugin(Path(tmp))
+            module._init_db()
+
+            plugin_dir = Path(tmp) / "plugins" / "hermes-virustotal"
+            db_path = plugin_dir / "vtai_cache.db"
+
+            self.assertEqual(stat.S_IMODE(plugin_dir.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(db_path.stat().st_mode) & 0o077, 0)
+
 
 class VirusTotalToolTests(unittest.TestCase):
     def tearDown(self):
@@ -639,6 +651,76 @@ class VirusTotalToolTests(unittest.TestCase):
             self.assertIn("VTAI_AGENT_TOKEN=vtai_token", env_content)
             self.assertIn("VTAI_AGENT_ID=agt_123", env_content)
             self.assertIn("VTAI_AGENT_HANDLE=HermesAdvisor#123", env_content)
+
+    def test_env_file_is_created_with_private_permissions(self):
+        import stat
+        with tempfile.TemporaryDirectory() as tmp:
+            load_plugin(Path(tmp))
+            vt_module = sys.modules[f"{PLUGIN_MODULE}.virustotal_tool"]
+            payload = {"agent_token": "vtai_token"}
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                with mock.patch.object(vt_module.urllib.request, "urlopen", return_value=FakeResponse(payload)):
+                    vt_module.register_vtai_agent()
+
+            env_path = Path(tmp) / ".env"
+            self.assertEqual(stat.S_IMODE(env_path.stat().st_mode) & 0o077, 0)
+
+    def test_upload_filename_sanitizer_strips_crlf_and_quotes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            load_plugin(Path(tmp))
+            vt_module = sys.modules[f"{PLUGIN_MODULE}.virustotal_tool"]
+
+            hostile = 'evil\r\nX-Injected: yes\r\n\r\n"double"quote.bin'
+            safe = vt_module._safe_upload_filename(hostile)
+
+            self.assertNotIn("\r", safe)
+            self.assertNotIn("\n", safe)
+            self.assertNotIn('"', safe)
+            self.assertNotIn("\\", safe)
+            self.assertLessEqual(len(safe), 120)
+
+    def test_upload_body_does_not_contain_injected_crlf_headers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            load_plugin(Path(tmp))
+            vt_module = sys.modules[f"{PLUGIN_MODULE}.virustotal_tool"]
+            captured = {}
+
+            class _Resp:
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+                def read(self): return b'{"data":{"id":"x"}}'
+
+            def _urlopen(req, timeout=None):
+                captured["data"] = req.data
+                return _Resp()
+
+            with mock.patch.dict(os.environ, {"VTAI_AGENT_TOKEN": "t"}, clear=True):
+                with mock.patch.object(vt_module.urllib.request, "urlopen", side_effect=_urlopen):
+                    vt_module.vt_upload_bytes(
+                        b"\x7fELFpayload",
+                        filename='a"\r\nX-Injected: yes\r\n\r\nb.bin',
+                        agent_comments="test",
+                    )
+
+            body = captured["data"]
+            self.assertNotIn(b"\r\nX-Injected:", body)
+            content_disposition_count = body.count(b"Content-Disposition:")
+            self.assertEqual(content_disposition_count, 2)
+
+    def test_jwt_secret_pattern_is_bounded(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            load_plugin(Path(tmp))
+            vt_module = sys.modules[f"{PLUGIN_MODULE}.virustotal_tool"]
+
+            evil = b"eyJ" + (b"A" * 65000)
+            start = time.monotonic()
+            result = vt_module.contains_secrets(evil)
+            elapsed = time.monotonic() - start
+
+            self.assertFalse(result)
+            self.assertLess(elapsed, 1.0, f"secret scan took {elapsed:.3f}s — possible ReDoS")
 
 
 if __name__ == "__main__":

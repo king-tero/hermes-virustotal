@@ -58,11 +58,11 @@ _SECRET_PATTERNS: tuple[re.Pattern[bytes], ...] = tuple(
         rb"ASIA[0-9A-Z]{16}",
         rb"ghp_[A-Za-z0-9]{36}",
         rb"gho_[A-Za-z0-9]{36}",
-        rb"github_pat_[A-Za-z0-9_]{20,}",
-        rb"xox[pabrsoe]-[A-Za-z0-9-]{10,}",
+        rb"github_pat_[A-Za-z0-9_]{20,200}",
+        rb"xox[pabrsoe]-[A-Za-z0-9-]{10,200}",
         rb"AIza[0-9A-Za-z_-]{35}",
-        rb"sk-[A-Za-z0-9]{20,}",
-        rb"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}",
+        rb"sk-[A-Za-z0-9]{20,200}",
+        rb"eyJ[A-Za-z0-9_-]{10,1024}\.eyJ[A-Za-z0-9_-]{10,1024}\.[A-Za-z0-9_-]{5,1024}",
     )
 )
 
@@ -124,6 +124,28 @@ def _upsert_env(content: str, key: str, value: str) -> str:
     return content + f"{key}={value}\n"
 
 
+def _write_private_file(path: Path, content: str) -> None:
+    """Atomically write a 0o600 file, never exposing it with broader perms."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(tmp_path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(content)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+    os.replace(tmp_path, path)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
 def _save_vtai_registration(
     token: str,
     agent_id: Optional[str] = None,
@@ -132,7 +154,6 @@ def _save_vtai_registration(
     """Persist VTAI registration details to the active Hermes profile .env."""
     env_path = get_hermes_home() / ".env"
     try:
-        env_path.parent.mkdir(parents=True, exist_ok=True)
         content = env_path.read_text() if env_path.exists() else ""
 
         content = _upsert_env(content, "VTAI_AGENT_TOKEN", token)
@@ -141,11 +162,7 @@ def _save_vtai_registration(
         if public_handle:
             content = _upsert_env(content, "VTAI_AGENT_HANDLE", public_handle)
 
-        env_path.write_text(content)
-        try:
-            env_path.chmod(0o600)
-        except OSError:
-            pass
+        _write_private_file(env_path, content)
         os.environ["VTAI_AGENT_TOKEN"] = token
         if agent_id:
             os.environ["VTAI_AGENT_ID"] = agent_id
@@ -167,7 +184,7 @@ def register_vtai_agent() -> Optional[str]:
     """Register a new agent with VTAI and return its x-apikey token."""
     payload = {
         "agent_family": "hermes-virustotal",
-        "agent_version": "0.1.0",
+        "agent_version": "0.1.1",
         "display_name": "Hermes VirusTotal",
     }
     data = json.dumps(payload).encode("utf-8")
@@ -349,6 +366,15 @@ def _multipart_body(fields: Dict[str, str], files: Dict[str, tuple[str, bytes, s
     return b"\r\n".join(lines), f"multipart/form-data; boundary={boundary}"
 
 
+_FILENAME_UNSAFE_RE = re.compile(r'[\r\n\t\x00"\\]')
+
+
+def _safe_upload_filename(filename: str) -> str:
+    """Neutralize chars that could break multipart Content-Disposition quoting."""
+    clean = _FILENAME_UNSAFE_RE.sub("_", filename or "")[:120]
+    return clean or "artifact.bin"
+
+
 def vt_upload_bytes(content: bytes, filename: str = "artifact.bin", agent_comments: str = "") -> str:
     """Upload bytes for VTAI/VT file analysis. This is opt-in from the hook."""
     if len(content) > MAX_UPLOAD_BYTES:
@@ -358,7 +384,7 @@ def vt_upload_bytes(content: bytes, filename: str = "artifact.bin", agent_commen
     if not creds:
         return json.dumps({"error": "VirusTotal credentials not available and VTAI registration failed."})
 
-    filename = filename or "artifact.bin"
+    filename = _safe_upload_filename(filename)
     content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     fields = {"agent_comments": agent_comments} if agent_comments else {}
     body, body_type = _multipart_body(fields, {"file": (filename, content, content_type)})

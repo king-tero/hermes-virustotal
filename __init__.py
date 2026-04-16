@@ -101,8 +101,15 @@ def _db_path() -> Path:
 
 
 def _init_db() -> None:
-    _plugin_dir().mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(_db_path()) as conn:
+    plugin_dir = _plugin_dir()
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        plugin_dir.chmod(0o700)
+    except OSError:
+        pass
+    db_path = _db_path()
+    db_existed = db_path.exists()
+    with sqlite3.connect(db_path) as conn:
         _ensure_table(conn, "intelligence", CACHE_SCHEMA_COLUMNS)
         _ensure_artifacts_table(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_intelligence_expires ON intelligence(expires_at)")
@@ -110,6 +117,11 @@ def _init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_artifacts_session_updated "
             "ON artifacts(session_id, updated_at)"
         )
+    if not db_existed:
+        try:
+            db_path.chmod(0o600)
+        except OSError:
+            pass
 
 
 def _ensure_table(conn: sqlite3.Connection, name: str, columns: Dict[str, str]) -> None:
@@ -400,7 +412,7 @@ def register(ctx) -> None:
 
     ctx.register_hook("pre_tool_call", pre_tool_call_hook)
     ctx.register_hook("pre_llm_call", pre_llm_call_hook)
-    logger.info("Hermes VirusTotal v0.1.0 online.")
+    logger.info("Hermes VirusTotal v0.1.1 online.")
 
 
 def pre_tool_call_hook(tool_name: str, args: Dict[str, Any], **kwargs) -> Optional[Dict[str, Any]]:
