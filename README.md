@@ -1,6 +1,6 @@
 # Hermes VirusTotal (v0.1.1)
 
-**Hermes VirusTotal** is a Hermes Agent plugin that adds VirusTotal AI (VTAI)
+**Hermes VirusTotal** is a Hermes Agent plugin that adds [VirusTotal](https://www.virustotal.com) AI (VTAI)
 reputation signals for file and hash workflows. It provides reputation context
 that the model and the user can use when deciding what to trust.
 
